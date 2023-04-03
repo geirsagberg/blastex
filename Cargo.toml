@@ -1,0 +1,13 @@
+[package]
+name = "blastex"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bevy = { git = "https://github.com/bevyengine/bevy?rev=09f1bd0be7bb1b6642dab989f1ebafe8807a1473" }
+bevy_pixel_camera = "0.4.0"
+
+[patch.crates-io]
+bevy_pixel_camera = { path = "vendor/bevy_pixel_camera" }

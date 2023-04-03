@@ -1,0 +1,15 @@
+[package]
+name = "bevy_pixel_camera"
+version = "0.4.0"
+authors = ["drakmaniso <moussault.laurent@gmail.com>"]
+edition = "2021"
+description = "A simple pixel-perfect camera plugin for Bevy, suitable for pixel-art"
+readme = "README.md"
+repository = "https://github.com/drakmaniso/bevy_pixel_camera"
+keywords = ["bevy", "graphics", "2d", "pixels", "pixel-art"]
+categories = ["graphics", "game-development"]
+exclude = ["assets/**", ".vscode/**"]
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bevy = { git = "https://github.com/bevyengine/bevy?rev=09f1bd0be7bb1b6642dab989f1ebafe8807a1473" }
