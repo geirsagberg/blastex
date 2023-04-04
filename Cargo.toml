@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 bevy = { git = "https://github.com/bevyengine/bevy?rev=09f1bd0be7bb1b6642dab989f1ebafe8807a1473" }
 bevy_pixel_camera = "0.4.0"
+rand = "0.8.5"
 
 [patch.crates-io]
 bevy_pixel_camera = { path = "vendor/bevy_pixel_camera" }

@@ -1,6 +1,8 @@
 #![allow(unused_parens)]
 use std::time::Duration;
 
+use rand::{rngs::ThreadRng, thread_rng, Rng};
+
 use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
     prelude::*,
@@ -15,9 +17,12 @@ const SCALE: i32 = 2;
 const GAME_WIDTH: f32 = WINDOW_WIDTH / SCALE as f32;
 const GAME_HEIGHT: f32 = WINDOW_HEIGHT / SCALE as f32;
 
+const BULLET_SPEED: f32 = 3.0;
+
 fn main() {
     App::new()
         .insert_resource(EntityCount::default())
+        .insert_resource(Score(0))
         .add_plugins(
             DefaultPlugins
                 .set(ImagePlugin::default_nearest())
@@ -38,34 +43,112 @@ fn main() {
         .add_systems(
             FixedUpdate,
             (
-                update_player_movement,
-                update_movement,
-                clamp_inside_world,
-                shoot,
-            )
-                .chain(),
+                (
+                    update_player_movement,
+                    update_movement,
+                    clamp_inside_world,
+                    shoot,
+                )
+                    .chain(),
+                spawn_enemies,
+                update_lifetimes,
+                despawn_outside_world,
+            ),
         )
-        .add_systems(PostUpdate, (despawn_outside_world).chain())
         .run();
 }
 
+#[derive(Component, Default)]
+struct Enemy;
+
+#[derive(Bundle)]
+struct EnemyBundle {
+    sprite: SpriteBundle,
+    movement: Movement,
+    aabb: AABB,
+    enemy: Enemy,
+    lifetime: Lifetime,
+}
+
+impl Default for EnemyBundle {
+    fn default() -> Self {
+        Self {
+            sprite: SpriteBundle::default(),
+            movement: Movement::default(),
+            aabb: AABB::default(),
+            enemy: Enemy::default(),
+            lifetime: Lifetime::from_seconds(5.0),
+        }
+    }
+}
+
 #[derive(Component)]
-struct Lifetime(Duration);
+struct EnemySpawner {
+    timer: Timer,
+    texture: Handle<Image>,
+    movement: Movement,
+    aabb: AABB,
+}
+
+#[derive(Component)]
+struct Lifetime {
+    timer: Timer,
+}
+
+impl Lifetime {
+    fn from_seconds(seconds: f32) -> Self {
+        Self {
+            timer: Timer::from_seconds(seconds, TimerMode::Once),
+        }
+    }
+}
+
+fn spawn_enemies(
+    time: Res<FixedTime>,
+    mut commands: Commands,
+    mut query: Query<(&mut EnemySpawner)>,
+) {
+    for (mut enemy_spawner) in &mut query {
+        if enemy_spawner.timer.tick(time.period).finished() {
+            let mut rng = thread_rng();
+            let x = rng.gen::<f32>() * GAME_WIDTH - GAME_WIDTH / 2.0;
+            let y = GAME_HEIGHT / 2.0;
+
+            commands.spawn((EnemyBundle {
+                sprite: SpriteBundle {
+                    texture: enemy_spawner.texture.clone(),
+                    transform: Transform::from_xyz(x, y + 16., 1.0),
+                    ..default()
+                },
+                movement: enemy_spawner.movement,
+                aabb: AABB {
+                    half_size: Vec2::splat(16.0),
+                },
+                ..default()
+            },));
+        }
+    }
+}
 
 fn update_lifetimes(
     mut commands: Commands,
-    time: Res<Time>,
+    time: Res<FixedTime>,
     mut query: Query<(Entity, &mut Lifetime)>,
 ) {
     for (entity, mut lifetime) in &mut query {
-        lifetime.0 = lifetime.0.saturating_sub(time.delta());
-        if lifetime.0 <= Duration::from_secs(0) {
+        if lifetime.timer.tick(time.period).finished() {
             commands.entity(entity).despawn_recursive();
         }
     }
 }
 
-fn despawn_outside_world(mut commands: Commands, query: Query<(Entity, &Transform, &AABB)>) {
+#[derive(Component)]
+struct AutoDespawn;
+
+fn despawn_outside_world(
+    mut commands: Commands,
+    query: Query<(Entity, &Transform, &AABB), With<AutoDespawn>>,
+) {
     for (entity, transform, aabb) in &query {
         let position = transform.translation;
         let half_size = aabb.half_size;
@@ -110,10 +193,9 @@ fn spawn_bullet(transform: &Transform, aabb: &AABB, commands: &mut Commands, dir
         Direction::Right => 1.0,
     };
 
-    const BULLET_SPEED: f32 = 3.0;
-
     commands.spawn((
         Bullet,
+        AutoDespawn,
         SpriteBundle {
             sprite: Sprite {
                 color: Color::WHITE,
@@ -134,8 +216,9 @@ fn spawn_bullet(transform: &Transform, aabb: &AABB, commands: &mut Commands, dir
             acceleration: Vec2::ZERO,
             velocity: Vec2::new(direction_component * BULLET_SPEED, 0.0),
             damping: 0.0,
+            max_speed: 10.0,
         },
-        Lifetime(Duration::from_secs(1)),
+        Lifetime::from_seconds(5.0),
     ));
 }
 
@@ -164,17 +247,21 @@ impl DebugText {
     }
 }
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone, Copy)]
 struct Movement {
     acceleration: Vec2,
     velocity: Vec2,
     damping: f32,
+    max_speed: f32,
 }
 
-#[derive(Component)]
+#[derive(Component, Default)]
 struct AABB {
     half_size: Vec2,
 }
+
+#[derive(Resource)]
+struct Score(usize);
 
 fn setup(
     mut commands: Commands,
@@ -212,6 +299,7 @@ fn setup(
             acceleration: Vec2::ZERO,
             velocity: Vec2::ZERO,
             damping: 0.1,
+            max_speed: 2.,
         },
     ));
 
@@ -227,10 +315,10 @@ fn setup(
                 },
             ),
             TextSection::new(
-                "\nEntities: 0",
+                "\nScore: 0",
                 TextStyle {
                     font: font.clone(),
-                    font_size: 12.0,
+                    font_size: 24.0,
                     color: Color::WHITE,
                 },
             ),
@@ -242,12 +330,41 @@ fn setup(
             ..default()
         }),
     ));
+
+    commands.spawn(EnemySpawner {
+        timer: Timer::from_seconds(1.0, TimerMode::Repeating),
+        texture: asset_server.load("enemy_01.png"),
+        movement: Movement {
+            acceleration: Vec2::new(0.0, -0.1),
+            velocity: Vec2::new(0.0, -1.0),
+            damping: 0.0,
+            max_speed: 10.0,
+        },
+        aabb: AABB {
+            half_size: Vec2::splat(16.0),
+        },
+    });
+
+    commands.spawn(EnemySpawner {
+        timer: Timer::from_seconds(1.5, TimerMode::Repeating),
+        texture: asset_server.load("enemy_02.png"),
+        movement: Movement {
+            acceleration: Vec2::new(0.0, -0.1),
+            velocity: Vec2::new(0.0, -0.5),
+            damping: 0.0,
+            max_speed: 10.0,
+        },
+        aabb: AABB {
+            half_size: Vec2::splat(16.0),
+        },
+    });
 }
 
 fn update_debug_text(
     time: Res<Time>,
     diagnostics: Res<Diagnostics>,
     mut query: Query<(&mut Text, &mut DebugText)>,
+    score: Res<Score>,
 ) {
     for (mut text, mut debug_text) in &mut query {
         debug_text.timer.tick(time.delta());
@@ -257,6 +374,8 @@ fn update_debug_text(
                     text.sections[0].value = format!("FPS: {fps:.1}");
                 }
             }
+            let score = score.0;
+            text.sections[1].value = format!("\nScore: {score}");
         }
     }
 }
@@ -296,6 +415,13 @@ fn update_movement(mut query: Query<(&mut Movement, &mut Transform)>) {
             let damping = movement.damping;
             movement.velocity *= 1. - damping;
         }
+
+        let velocity = movement.velocity;
+        let velocity_length = velocity.length();
+        if velocity_length > movement.max_speed {
+            movement.velocity = velocity / velocity_length * movement.max_speed;
+        }
+
         transform.translation.x += movement.velocity.x;
         transform.translation.y += movement.velocity.y;
     }
