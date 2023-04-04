@@ -1,4 +1,7 @@
-use bevy::prelude::*;
+use bevy::{
+    diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
+    prelude::*,
+};
 use bevy_pixel_camera::{PixelCameraBundle, PixelCameraPlugin};
 
 const WINDOW_WIDTH: f32 = 1024.0;
@@ -24,8 +27,10 @@ fn main() {
                     ..default()
                 }),
         )
+        .add_plugin(FrameTimeDiagnosticsPlugin)
         .add_plugin(PixelCameraPlugin)
         .add_systems(Startup, setup)
+        .add_systems(Update, (update_fps))
         .add_systems(FixedUpdate, (update_movement, clamp_inside_world).chain())
         .run();
 }
@@ -38,6 +43,19 @@ struct Player;
 
 #[derive(Component)]
 struct Background;
+
+#[derive(Component)]
+struct FpsText {
+    timer: Timer,
+}
+
+impl FpsText {
+    fn new() -> Self {
+        Self {
+            timer: Timer::from_seconds(0.1, TimerMode::Repeating),
+        }
+    }
+}
 
 #[derive(Component, Default)]
 struct Movement {
@@ -55,11 +73,12 @@ fn setup(
     asset_server: Res<AssetServer>,
     mut texture_atlases: ResMut<Assets<TextureAtlas>>,
 ) {
-    commands.spawn((Camera, PixelCameraBundle::from_zoom(2)));
-
+    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
     let ship_handle = asset_server.load("ship.png");
     let ship_atlas = TextureAtlas::from_grid(ship_handle, Vec2::new(48.0, 32.0), 6, 1, None, None);
     let ship_atlas_handle = texture_atlases.add(ship_atlas);
+
+    commands.spawn((Camera, PixelCameraBundle::from_zoom(2)));
 
     commands.spawn((
         Background,
@@ -83,6 +102,41 @@ fn setup(
         },
         Movement::default(),
     ));
+
+    commands.spawn((
+        FpsText::new(),
+        TextBundle::from_section(
+            "FPS: 0",
+            TextStyle {
+                font: font.clone(),
+                font_size: 12.0,
+                color: Color::WHITE,
+            },
+        )
+        .with_style(Style {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(10.0),
+            ..default()
+        }),
+    ));
+}
+
+fn update_fps(
+    time: Res<Time>,
+    diagnostics: Res<Diagnostics>,
+    mut query: Query<(&mut Text, &mut FpsText)>,
+) {
+    for (mut text, mut fps_text) in &mut query {
+        fps_text.timer.tick(time.delta());
+        if fps_text.timer.just_finished() {
+            if let Some(fps) = diagnostics.get(FrameTimeDiagnosticsPlugin::FPS) {
+                if let Some(fps) = fps.smoothed() {
+                    text.sections[0].value = format!("FPS: {fps:.1}");
+                }
+            }
+        }
+    }
 }
 
 fn update_movement(
