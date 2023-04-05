@@ -1,7 +1,8 @@
 #![allow(unused_parens)]
-use std::time::Duration;
 
-use rand::{rngs::ThreadRng, thread_rng, Rng};
+use std::f32::consts::PI;
+
+use rand::{thread_rng, Rng};
 
 use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin},
@@ -48,14 +49,63 @@ fn main() {
                     update_movement,
                     clamp_inside_world,
                     shoot,
+                    check_collisions,
                 )
                     .chain(),
                 spawn_enemies,
                 update_lifetimes,
                 despawn_outside_world,
+                spawn_mirrors,
             ),
         )
         .run();
+}
+
+fn spawn_mirrors(
+    mut commands: Commands,
+    time: Res<FixedTime>,
+    mut query: Query<(&mut MirrorSpawner, &GlobalTransform)>,
+) {
+    for (mut mirror_spawner, transform) in &mut query {
+        if mirror_spawner.timer.tick(time.period).finished() {
+            commands.spawn(MirrorBundle {
+                aabb: AABB {
+                    half_size: Vec2::new(8.0, 1.0),
+                },
+                lifetime: Lifetime::from_seconds(10.0),
+                movement: Movement {
+                    velocity: Vec2::new(0.0, 1.0),
+                    max_speed: 1.0,
+                    ..default()
+                },
+                sprite: SpriteBundle {
+                    transform: //Transform::default(),
+                    transform
+                        .compute_transform()
+                        .with_rotation(Quat::from_rotation_z(mirror_spawner.angle)),
+                    sprite: Sprite {
+                        color: Color::WHITE,
+                        custom_size: Some(Vec2::new(16.0, 2.0)),
+                        ..default()
+                    },
+                    ..default()
+                },
+                ..default()
+            });
+        }
+    }
+}
+
+#[derive(Component, Default)]
+struct Mirror;
+
+#[derive(Bundle, Default)]
+struct MirrorBundle {
+    sprite: SpriteBundle,
+    movement: Movement,
+    aabb: AABB,
+    mirror: Mirror,
+    lifetime: Lifetime,
 }
 
 #[derive(Component, Default)]
@@ -68,6 +118,19 @@ struct EnemyBundle {
     aabb: AABB,
     enemy: Enemy,
     lifetime: Lifetime,
+}
+
+#[derive(Component)]
+struct MirrorSpawner {
+    timer: Timer,
+    angle: f32,
+}
+
+#[derive(Bundle)]
+struct MirrorSpawnerBundle {
+    mirror_spawner: MirrorSpawner,
+    #[bundle]
+    transform_bundle: TransformBundle,
 }
 
 impl Default for EnemyBundle {
@@ -90,7 +153,7 @@ struct EnemySpawner {
     aabb: AABB,
 }
 
-#[derive(Component)]
+#[derive(Component, Default)]
 struct Lifetime {
     timer: Timer,
 }
@@ -111,7 +174,7 @@ fn spawn_enemies(
     for (mut enemy_spawner) in &mut query {
         if enemy_spawner.timer.tick(time.period).finished() {
             let mut rng = thread_rng();
-            let x = rng.gen::<f32>() * GAME_WIDTH - GAME_WIDTH / 2.0;
+            let x = (rng.gen::<f32>() * GAME_WIDTH - GAME_WIDTH / 2.0) * 0.95;
             let y = GAME_HEIGHT / 2.0;
 
             commands.spawn((EnemyBundle {
@@ -121,11 +184,99 @@ fn spawn_enemies(
                     ..default()
                 },
                 movement: enemy_spawner.movement,
-                aabb: AABB {
-                    half_size: Vec2::splat(16.0),
-                },
+                aabb: enemy_spawner.aabb,
                 ..default()
             },));
+        }
+    }
+}
+
+fn check_obb_overlap(
+    transform1: &Transform,
+    obb1_half_extents: &Vec2,
+    transform2: &Transform,
+    obb2_half_extents: &Vec2,
+) -> bool {
+    // Convert the transforms to 4x4 matrices
+    let mat1 = transform1.compute_matrix();
+    let mat2 = transform2.compute_matrix();
+
+    // Compute the orientation matrices of each OBB
+    let orient1 = Mat4::from_quat(transform1.rotation);
+    let orient2 = Mat4::from_quat(transform2.rotation);
+
+    // Compute the axes to be used in the Separating Axis Theorem
+    let axes = [
+        orient1.x_axis.truncate().truncate(),
+        orient1.y_axis.truncate().truncate(),
+        orient2.x_axis.truncate().truncate(),
+        orient2.y_axis.truncate().truncate(),
+    ];
+
+    for axis in axes.iter() {
+        // Project the half extents of both OBBs onto the axis
+        let mut projection1 = Vec2::new(0.0, 0.0);
+        projection1.x = obb1_half_extents.x * axis.dot(orient1.x_axis.truncate().truncate());
+        projection1.y = obb1_half_extents.y * axis.dot(orient1.y_axis.truncate().truncate());
+
+        let mut projection2 = Vec2::new(0.0, 0.0);
+        projection2.x = obb2_half_extents.x * axis.dot(orient2.x_axis.truncate().truncate());
+        projection2.y = obb2_half_extents.y * axis.dot(orient2.y_axis.truncate().truncate());
+
+        // Project the centers of both OBBs onto the axis
+        let center1 = mat1.transform_point3(Vec3::ZERO).truncate();
+        let center2 = mat2.transform_point3(Vec3::ZERO).truncate();
+
+        let center_projection = center2 - center1;
+        let center_distance = center_projection.dot(*axis);
+
+        // Check if the projections of the OBBs onto the axis overlap
+        let overlap =
+            (projection1.x.abs() + projection1.y.abs() + projection2.x.abs() + projection2.y.abs())
+                - center_distance.abs()
+                < 0.0001;
+        if !overlap {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn check_collisions(
+    mut commands: Commands,
+    query_enemy: Query<(Entity, &AABB, &Transform), With<Enemy>>,
+    query_mirror: Query<(Entity, &AABB, &Transform), With<Mirror>>,
+    query_bullet: Query<(Entity, &AABB, &Transform), With<Bullet>>,
+) {
+    for (entity, aabb, transform) in &query_bullet {
+        let position = transform.translation;
+        let half_size = aabb.half_size;
+
+        for (entity_mirror, aabb_mirror, transform_mirror) in &query_mirror {
+            if check_obb_overlap(
+                transform,
+                &half_size,
+                transform_mirror,
+                &aabb_mirror.half_size,
+            ) {
+                commands.entity(entity).despawn_recursive();
+                commands.entity(entity_mirror).despawn_recursive();
+            }
+        }
+
+        for (entity_enemy, aabb_enemy, transform_enemy) in &query_enemy {
+            let position_enemy = transform_enemy.translation;
+            let half_size_enemy = aabb_enemy.half_size;
+
+            if position.x + half_size.x > position_enemy.x - half_size_enemy.x
+                && position.x - half_size.x < position_enemy.x + half_size_enemy.x
+                && position.y + half_size.y > position_enemy.y - half_size_enemy.y
+                && position.y - half_size.y < position_enemy.y + half_size_enemy.y
+            {
+                commands.entity(entity).despawn_recursive();
+                commands.entity(entity_enemy).despawn_recursive();
+            }
         }
     }
 }
@@ -255,7 +406,7 @@ struct Movement {
     max_speed: f32,
 }
 
-#[derive(Component, Default)]
+#[derive(Component, Default, Clone, Copy)]
 struct AABB {
     half_size: Vec2,
 }
@@ -357,6 +508,31 @@ fn setup(
         aabb: AABB {
             half_size: Vec2::splat(16.0),
         },
+    });
+
+    spawn_mirror_spawner(&mut commands, Direction::Left);
+    spawn_mirror_spawner(&mut commands, Direction::Right);
+}
+
+fn spawn_mirror_spawner(commands: &mut Commands, direction: Direction) {
+    let angle = match direction {
+        Direction::Left => -PI / 4.,
+        Direction::Right => PI / 4.,
+    };
+    let x = match direction {
+        Direction::Left => -GAME_WIDTH / 2. + 10.,
+        Direction::Right => GAME_WIDTH / 2. - 10.,
+    };
+    commands.spawn(MirrorSpawnerBundle {
+        mirror_spawner: MirrorSpawner {
+            timer: Timer::from_seconds(1., TimerMode::Repeating),
+            angle,
+        },
+        transform_bundle: TransformBundle::from_transform(Transform::from_xyz(
+            x,
+            -GAME_HEIGHT / 2. - 10.,
+            1.0,
+        )),
     });
 }
 
