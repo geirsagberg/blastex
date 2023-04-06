@@ -1,5 +1,6 @@
 #![allow(unused_parens)]
 
+use sepax::Sepax;
 use std::f32::consts::PI;
 
 use rand::{thread_rng, Rng};
@@ -9,6 +10,7 @@ use bevy::{
     prelude::*,
 };
 use bevy_pixel_camera::{PixelCameraBundle, PixelCameraPlugin};
+use sepax::prelude::*;
 
 const WINDOW_WIDTH: f32 = 1024.0;
 const WINDOW_HEIGHT: f32 = 768.0;
@@ -19,6 +21,8 @@ const GAME_WIDTH: f32 = WINDOW_WIDTH / SCALE as f32;
 const GAME_HEIGHT: f32 = WINDOW_HEIGHT / SCALE as f32;
 
 const BULLET_SPEED: f32 = 3.0;
+
+pub mod sepax;
 
 fn main() {
     App::new()
@@ -69,9 +73,7 @@ fn spawn_mirrors(
     for (mut mirror_spawner, transform) in &mut query {
         if mirror_spawner.timer.tick(time.period).finished() {
             commands.spawn(MirrorBundle {
-                aabb: AABB {
-                    half_size: Vec2::new(8.0, 1.0),
-                },
+                aabb: AABB { position },
                 lifetime: Lifetime::from_seconds(10.0),
                 movement: Movement {
                     velocity: Vec2::new(0.0, 1.0),
@@ -177,70 +179,20 @@ fn spawn_enemies(
             let x = (rng.gen::<f32>() * GAME_WIDTH - GAME_WIDTH / 2.0) * 0.95;
             let y = GAME_HEIGHT / 2.0;
 
-            commands.spawn((EnemyBundle {
-                sprite: SpriteBundle {
-                    texture: enemy_spawner.texture.clone(),
-                    transform: Transform::from_xyz(x, y + 16., 1.0),
+            commands.spawn(
+                (EnemyBundle {
+                    sprite: SpriteBundle {
+                        texture: enemy_spawner.texture.clone(),
+                        transform: Transform::from_xyz(x, y + 16., 1.0),
+                        ..default()
+                    },
+                    movement: enemy_spawner.movement,
+                    aabb: enemy_spawner.aabb,
                     ..default()
-                },
-                movement: enemy_spawner.movement,
-                aabb: enemy_spawner.aabb,
-                ..default()
-            },));
+                }),
+            );
         }
     }
-}
-
-fn check_obb_overlap(
-    transform1: &Transform,
-    obb1_half_extents: &Vec2,
-    transform2: &Transform,
-    obb2_half_extents: &Vec2,
-) -> bool {
-    // Convert the transforms to 4x4 matrices
-    let mat1 = transform1.compute_matrix();
-    let mat2 = transform2.compute_matrix();
-
-    // Compute the orientation matrices of each OBB
-    let orient1 = Mat4::from_quat(transform1.rotation);
-    let orient2 = Mat4::from_quat(transform2.rotation);
-
-    // Compute the axes to be used in the Separating Axis Theorem
-    let axes = [
-        orient1.x_axis.truncate().truncate(),
-        orient1.y_axis.truncate().truncate(),
-        orient2.x_axis.truncate().truncate(),
-        orient2.y_axis.truncate().truncate(),
-    ];
-
-    for axis in axes.iter() {
-        // Project the half extents of both OBBs onto the axis
-        let mut projection1 = Vec2::new(0.0, 0.0);
-        projection1.x = obb1_half_extents.x * axis.dot(orient1.x_axis.truncate().truncate());
-        projection1.y = obb1_half_extents.y * axis.dot(orient1.y_axis.truncate().truncate());
-
-        let mut projection2 = Vec2::new(0.0, 0.0);
-        projection2.x = obb2_half_extents.x * axis.dot(orient2.x_axis.truncate().truncate());
-        projection2.y = obb2_half_extents.y * axis.dot(orient2.y_axis.truncate().truncate());
-
-        // Project the centers of both OBBs onto the axis
-        let center1 = mat1.transform_point3(Vec3::ZERO).truncate();
-        let center2 = mat2.transform_point3(Vec3::ZERO).truncate();
-
-        let center_projection = center2 - center1;
-        let center_distance = center_projection.dot(*axis);
-
-        // Check if the projections of the OBBs onto the axis overlap
-        let overlap =
-            (projection1.x.abs() + projection1.y.abs() + projection2.x.abs() + projection2.y.abs())
-                - center_distance.abs()
-                < 0.0001;
-        if !overlap {
-            return false;
-        }
-    }
-
-    true
 }
 
 fn check_collisions(
@@ -254,14 +206,12 @@ fn check_collisions(
         let half_size = aabb.half_size;
 
         for (entity_mirror, aabb_mirror, transform_mirror) in &query_mirror {
-            if check_obb_overlap(
-                transform,
-                &half_size,
-                transform_mirror,
-                &aabb_mirror.half_size,
-            ) {
-                commands.entity(entity).despawn_recursive();
-                commands.entity(entity_mirror).despawn_recursive();
+            match sat_collision(aabb_mirror, aabb) {
+                (0., 0.) => {
+                    commands.entity(entity).despawn_recursive();
+                    commands.entity(entity_mirror).despawn_recursive();
+                }
+                col => {}
             }
         }
 
@@ -404,11 +354,6 @@ struct Movement {
     velocity: Vec2,
     damping: f32,
     max_speed: f32,
-}
-
-#[derive(Component, Default, Clone, Copy)]
-struct AABB {
-    half_size: Vec2,
 }
 
 #[derive(Resource)]
